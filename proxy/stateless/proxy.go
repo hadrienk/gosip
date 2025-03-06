@@ -162,10 +162,15 @@ func (p *Proxy) validateMaxForwards(ctx context.Context, req *sip.Request, w sip
 	return p.validateLoop, nil
 }
 
-func (p *Proxy) validateLoop(ctx context.Context, _ *sip.Request, _ sip.ResponseWriter) (state, error) {
+func (p *Proxy) validateLoop(ctx context.Context, _ *sip.Request, w sip.ResponseWriter) (state, error) {
 	if p.DetectLoops {
 		// TODO: Implement loop detection
-		return p.done, nil
+		if todo(false) {
+			if err := w.Write(ctx, sip.ResponseStatusLoopDetected); err != nil {
+				return nil, err
+			}
+			return p.done, nil
+		}
 	}
 	return p.validateProxyRequire, nil
 }

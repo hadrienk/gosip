@@ -45,36 +45,6 @@ func removeMaddr(_ sip.URI) sip.URI {
 	panic("not implemented yet")
 }
 
-// TODO: Move to Headers and make PR.
-func headersRecordRoute(hdrs sip.Headers) header.RecordRoute {
-	for _, hdr := range hdrs.Get("Record-Route") {
-		if route, ok := hdr.(header.RecordRoute); ok {
-			return route
-		}
-	}
-	return nil
-}
-
-// TODO: Move to Headers and make PR.
-func headersRoute(hdrs sip.Headers) header.Route {
-	for _, hdr := range hdrs.Get("Route") {
-		if route, ok := hdr.(header.Route); ok {
-			return route
-		}
-	}
-	return nil
-}
-
-// TODO: Move to Headers and make PR.
-func headersProxyRequire(hdrs sip.Headers) header.ProxyRequire {
-	for _, hdr := range hdrs.Get("Proxy-Require") {
-		if route, ok := hdr.(header.ProxyRequire); ok {
-			return route
-		}
-	}
-	return nil
-}
-
 func (p *Proxy) validateProxyAuth(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
 	if todo(false) {
 		return nil, errors.New("implement me")
@@ -161,7 +131,7 @@ func (p *Proxy) validateLoop(ctx context.Context, req *sip.Request, w sip.Respon
 func (p *Proxy) validateProxyRequire(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
 	if req.Headers.Has("Proxy-Require") {
 		var unsupported header.Unsupported
-		for _, feature := range headersProxyRequire(req.Headers) {
+		for _, feature := range req.Headers.ProxyRequire() {
 			if !slices.Contains(p.SupportedFeatures, feature) {
 				unsupported = append(unsupported, feature)
 			}
@@ -179,7 +149,7 @@ func (p *Proxy) validateProxyRequire(ctx context.Context, req *sip.Request, w si
 
 func (p *Proxy) routePreprocess(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
 	if p.isURIMarked(req.URI) {
-		route := headersRoute(req.Headers)
+		route := req.Headers.Route()
 		n := len(route)
 		var last header.EntityAddr
 		if n < 1 {
@@ -195,7 +165,7 @@ func (p *Proxy) routePreprocess(ctx context.Context, req *sip.Request, w sip.Res
 			req.URI = removeMaddr(req.URI)
 		}
 	}
-	routes := headersRoute(req.Headers)
+	routes := req.Headers.Route()
 	if len(routes) >= 1 && routes[0].URI == p.URI {
 		req.Headers.Set(routes[1:])
 	}
@@ -255,7 +225,7 @@ func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, w sip.Resp
 		}
 
 		// Record-Route
-		rroute := headersRecordRoute(reqCopy.Headers)
+		rroute := req.Headers.RecordRoute()
 		rroute = append(header.RecordRoute{{
 			URI: &uri.SIP{
 				User:   uri.User("foo"),

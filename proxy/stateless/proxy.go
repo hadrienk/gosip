@@ -58,12 +58,12 @@ func (p *Proxy) handleInboundResponse(ctx context.Context, response *sip.Respons
 				}
 				defer dial.Close()
 				buf := bufio.NewWriter(dial)
-				defer buf.Flush()
 				err = response.RenderTo(buf)
 				if err != nil {
 					slog.Error("Dialing", "error", err)
 					return err
 				}
+				return buf.Flush()
 			}
 		}
 	}

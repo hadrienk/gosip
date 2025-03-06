@@ -119,9 +119,14 @@ func (p *Proxy) start(_ context.Context, _ *sip.Request, _ sip.ResponseWriter) (
 	return p.validateSyntax, nil
 }
 
-func (p *Proxy) validateSyntax(_ context.Context, _ *sip.Request, _ sip.ResponseWriter) (state, error) {
-	// https://datatracker.ietf.org/doc/html/rfc3261#section-16.3
+func (p *Proxy) validateSyntax(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
 	// TODO: investigate if the lower layer takes care of this.
+	// https://datatracker.ietf.org/doc/html/rfc3261#section-16.3
+	if !req.IsValid() {
+		if err := w.Write(ctx, sip.ResponseStatusBadRequest); err != nil {
+			return nil, err
+		}
+	}
 	return p.validateScheme, nil
 }
 

@@ -16,11 +16,16 @@ import (
 	"github.com/ghettovoice/gosip/sip/uri"
 )
 
+var DefaultSupportedSchemes = []string{"sip", "sips"}
+
 type Proxy struct {
 	DetectLoops       bool
 	SupportedFeatures []string
-	URI               uri.URI
-	Transport         sip.Transport
+
+	// If nil, DefaultSupportedSchemes is used.
+	SupportedSchemes []string
+	URI              uri.URI
+	Transport        sip.Transport
 }
 
 func (p *Proxy) BindTo(ts ...sip.Transport) {
@@ -130,8 +135,14 @@ func (p *Proxy) validateSyntax(ctx context.Context, req *sip.Request, w sip.Resp
 	return p.validateScheme, nil
 }
 
-func (p *Proxy) validateScheme(ctx context.Context, _ *sip.Request, w sip.ResponseWriter) (state, error) {
-	if todo(false) {
+func (p *Proxy) validateScheme(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	var supported []string
+	if p.SupportedSchemes == nil {
+		supported = DefaultSupportedSchemes
+	} else {
+		supported = p.SupportedSchemes
+	}
+	if !slices.Contains(supported, req.URI.(*uri.Any).Scheme) {
 		if err := w.Write(ctx, sip.ResponseStatusUnsupportedURIScheme); err != nil {
 			return nil, err
 		}

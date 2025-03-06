@@ -166,6 +166,33 @@ func (hdrs Headers) Clone() Headers {
 	return hdrs2
 }
 
+func (hdrs Headers) RecordRoute() header.RecordRoute {
+	for _, hdr := range hdrs.Get("Record-Route") {
+		if route, ok := hdr.(header.RecordRoute); ok {
+			return route
+		}
+	}
+	return nil
+}
+
+func (hdrs Headers) ProxyRequire() header.ProxyRequire {
+	for _, hdr := range hdrs.Get("Proxy-Require") {
+		if route, ok := hdr.(header.ProxyRequire); ok {
+			return route
+		}
+	}
+	return nil
+}
+
+func (hdrs Headers) Route() header.Route {
+	for _, hdr := range hdrs.Get("Route") {
+		if route, ok := hdr.(header.Route); ok {
+			return route
+		}
+	}
+	return nil
+}
+
 func (hdrs Headers) ViaHops() iter.Seq2[int, *header.ViaHop] {
 	return func(yield func(int, *header.ViaHop) bool) {
 		var i int

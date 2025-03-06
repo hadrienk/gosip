@@ -23,9 +23,11 @@ type Proxy struct {
 	Transport         sip.Transport
 }
 
-func (p *Proxy) BindTo(t sip.Transport) {
-	t.OnInboundRequest(p.handleInboundRequest)
-	t.OnInboundResponse(p.handleInboundResponse)
+func (p *Proxy) BindTo(ts ...sip.Transport) {
+	for _, t := range ts {
+		t.OnInboundRequest(p.handleInboundRequest)
+		t.OnInboundResponse(p.handleInboundResponse)
+	}
 }
 
 // TODO: Why seq2 in message?

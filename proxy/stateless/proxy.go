@@ -48,7 +48,7 @@ func (p *Proxy) handleInboundResponse(ctx context.Context, response *sip.Respons
 		if front, rest, ok := PopFront(vias); ok {
 			if todo(front.Addr.String() != "") { // Check if this is this proxy.
 				response.Headers.Set(header.Via(rest))
-				// Need a way to send the resp with transport.
+				// TODO: Need a way to send the resp with the transport. Transaction layer leaks for now.
 				slog.Info("Dialing", "addr", rest[0].Addr.String())
 				dial, err := net.Dial("udp", rest[0].Addr.String())
 				if err != nil {
@@ -76,13 +76,6 @@ func removeMaddr(_ sip.URI) sip.URI {
 	panic("not implemented yet")
 }
 
-func (p *Proxy) validateProxyAuth(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
-	if todo(false) {
-		return nil, errors.New("implement me")
-	}
-	return p.routePreprocess, nil
-}
-
 func (p *Proxy) isURIMarked(sip.URI) bool {
 	return todo(false)
 }
@@ -107,12 +100,12 @@ func (p *Proxy) findTargets(ctx context.Context, req *sip.Request) ([]sip.URI, e
 	}, nil
 }
 
-type state func(ctx context.Context, req *sip.Request, respW sip.ResponseWriter) (state, error)
+type state func(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error)
 
-func (s *Proxy) handleInboundRequest(ctx context.Context, req *sip.Request, respW sip.ResponseWriter) (err error) {
+func (s *Proxy) handleInboundRequest(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (err error) {
 	var st state = s.start
 	for st != nil {
-		st, err = st(ctx, req, respW)
+		st, err = st(ctx, req, w)
 		if err != nil {
 			return err
 		}
@@ -120,17 +113,17 @@ func (s *Proxy) handleInboundRequest(ctx context.Context, req *sip.Request, resp
 	return nil
 }
 
-func (p *Proxy) start(ctx context.Context, req *sip.Request, respW sip.ResponseWriter) (state, error) {
+func (p *Proxy) start(_ context.Context, _ *sip.Request, _ sip.ResponseWriter) (state, error) {
 	return p.validateSyntax, nil
 }
 
-func (p *Proxy) validateSyntax(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+func (p *Proxy) validateSyntax(_ context.Context, _ *sip.Request, _ sip.ResponseWriter) (state, error) {
 	// https://datatracker.ietf.org/doc/html/rfc3261#section-16.3
 	// TODO: investigate if the lower layer takes care of this.
 	return p.validateScheme, nil
 }
 
-func (p *Proxy) validateScheme(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+func (p *Proxy) validateScheme(ctx context.Context, _ *sip.Request, w sip.ResponseWriter) (state, error) {
 	if todo(false) {
 		if err := w.Write(ctx, sip.ResponseStatusUnsupportedURIScheme); err != nil {
 			return nil, err
@@ -151,7 +144,7 @@ func (p *Proxy) validateMaxForwards(ctx context.Context, req *sip.Request, w sip
 	return p.validateLoop, nil
 }
 
-func (p *Proxy) validateLoop(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+func (p *Proxy) validateLoop(ctx context.Context, _ *sip.Request, _ sip.ResponseWriter) (state, error) {
 	if p.DetectLoops {
 		// TODO: Implement loop detection
 		return p.done, nil
@@ -178,7 +171,14 @@ func (p *Proxy) validateProxyRequire(ctx context.Context, req *sip.Request, w si
 	return p.validateProxyAuth, nil
 }
 
-func (p *Proxy) routePreprocess(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+func (p *Proxy) validateProxyAuth(_ context.Context, _ *sip.Request, _ sip.ResponseWriter) (state, error) {
+	if todo(false) {
+		return nil, errors.New("implement me")
+	}
+	return p.routePreprocess, nil
+}
+
+func (p *Proxy) routePreprocess(ctx context.Context, req *sip.Request, _ sip.ResponseWriter) (state, error) {
 	if p.isURIMarked(req.URI) {
 		route := req.Headers.Route()
 		n := len(route)
@@ -236,7 +236,7 @@ func (p *Proxy) determineTargets(ctx context.Context, req *sip.Request, w sip.Re
 	return p.forwardRequest, nil
 }
 
-func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.ResponseWriter) (state, error) {
 	// TODO: Transfer the state?
 	// targets = from last step
 	for _, addr := range []string{"sip:127.0.0.1:1234"} {

@@ -1,0 +1,305 @@
+package stateless
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"github.com/ghettovoice/gosip/sip"
+	"github.com/ghettovoice/gosip/sip/header"
+	"github.com/ghettovoice/gosip/sip/uri"
+	"iter"
+	"net/netip"
+	"slices"
+)
+
+type Proxy struct {
+	DetectLoops       bool
+	SupportedFeatures []string
+	URI               uri.URI
+	Transport         sip.Transport
+}
+
+func (p *Proxy) BindTo(t sip.Transport) {
+	t.OnInboundRequest(p.handleInboundRequest)
+	t.OnInboundResponse(p.handleInboundResponse)
+}
+
+func first(it iter.Seq2[int, *header.ViaHop]) (*header.ViaHop, bool) {
+	for _, v := range it {
+		return v, true
+	}
+	return nil, false
+}
+
+func (p *Proxy) handleInboundResponse(ctx context.Context, response *sip.Response) error {
+	if hop, ok := first(response.Headers.ViaHops()); ok {
+
+	}
+}
+
+func todo(b bool) bool {
+	return b
+}
+
+func removeMaddr(_ sip.URI) sip.URI {
+	panic("not implemented yet")
+}
+
+// TODO: Move to Headers and make PR.
+func headersRecordRoute(hdrs sip.Headers) header.RecordRoute {
+	for _, hdr := range hdrs.Get("Record-Route") {
+		if route, ok := hdr.(header.RecordRoute); ok {
+			return route
+		}
+	}
+	return nil
+}
+
+// TODO: Move to Headers and make PR.
+func headersRoute(hdrs sip.Headers) header.Route {
+	for _, hdr := range hdrs.Get("Route") {
+		if route, ok := hdr.(header.Route); ok {
+			return route
+		}
+	}
+	return nil
+}
+
+// TODO: Move to Headers and make PR.
+func headersProxyRequire(hdrs sip.Headers) header.ProxyRequire {
+	for _, hdr := range hdrs.Get("Proxy-Require") {
+		if route, ok := hdr.(header.ProxyRequire); ok {
+			return route
+		}
+	}
+	return nil
+}
+
+func (p *Proxy) validateProxyAuth(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	if todo(false) {
+		return nil, errors.New("implement me")
+	}
+	return p.routePreprocess, nil
+}
+
+func (p *Proxy) isURIMarked(sip.URI) bool {
+	return todo(false)
+}
+
+func (p *Proxy) hasMAddr(u sip.URI) (string, bool) {
+	return "", todo(false)
+}
+
+func (p *Proxy) isResponsibleFor(string) bool {
+	return todo(false)
+}
+
+func (p *Proxy) samePortAndTransport(req *sip.Request, maddr string) bool {
+	return todo(false)
+}
+
+func (p *Proxy) findTargets(ctx context.Context, req *sip.Request) ([]sip.URI, error) {
+	return []sip.URI{
+		&uri.SIP{
+			Addr: uri.HostPort("127.0.0.1", 1234),
+		},
+	}, nil
+}
+
+type state func(ctx context.Context, req *sip.Request, respW sip.ResponseWriter) (state, error)
+
+func (s *Proxy) handleInboundRequest(ctx context.Context, req *sip.Request, respW sip.ResponseWriter) (err error) {
+	var st state = s.start
+	for st != nil {
+		st, err = st(ctx, req, respW)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Proxy) start(ctx context.Context, req *sip.Request, respW sip.ResponseWriter) (state, error) {
+	return p.validateSyntax, nil
+}
+
+func (p *Proxy) validateSyntax(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	// https://datatracker.ietf.org/doc/html/rfc3261#section-16.3
+	// TODO: investigate if the lower layer takes care of this.
+	return p.validateScheme, nil
+}
+
+func (p *Proxy) validateScheme(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	if todo(false) {
+		if err := w.Write(ctx, sip.ResponseStatusUnsupportedURIScheme); err != nil {
+			return nil, err
+		}
+		return p.done, nil
+	}
+	return p.validateMaxForwards, nil
+}
+
+func (p *Proxy) validateMaxForwards(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	if req.Headers.Has("Max-Forwards") && req.Headers.MaxForwards() == 1 {
+		// TODO: Handle options?
+		if err := w.Write(ctx, sip.ResponseStatusTooManyHops); err != nil {
+			return nil, err
+		}
+		return p.done, nil
+	}
+	return p.validateLoop, nil
+}
+
+func (p *Proxy) validateLoop(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	if p.DetectLoops {
+		// TODO: Implement loop detection
+		return p.done, nil
+	}
+	return p.validateProxyRequire, nil
+}
+
+func (p *Proxy) validateProxyRequire(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	if req.Headers.Has("Proxy-Require") {
+		var unsupported header.Unsupported
+		for _, feature := range headersProxyRequire(req.Headers) {
+			if !slices.Contains(p.SupportedFeatures, feature) {
+				unsupported = append(unsupported, feature)
+			}
+		}
+		if len(unsupported) > 0 {
+			w.Headers().Set(unsupported)
+			if err := w.Write(ctx, sip.ResponseStatusBadExtension); err != nil {
+				return nil, err
+			}
+			return p.done, nil
+		}
+	}
+	return p.validateProxyAuth, nil
+}
+
+func (p *Proxy) routePreprocess(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	if p.isURIMarked(req.URI) {
+		route := headersRoute(req.Headers)
+		n := len(route)
+		var last header.EntityAddr
+		if n < 1 {
+			return nil, sip.ErrInvalidMessage
+		}
+		route, last = route[:n-1], route[n-1]
+		req.Headers.Set(route)
+		req.URI = last.URI
+		return p.done, nil
+	}
+	if maddr, found := p.hasMAddr(req.URI); found {
+		if p.isResponsibleFor(maddr) && p.samePortAndTransport(req, maddr) {
+			req.URI = removeMaddr(req.URI)
+		}
+	}
+	routes := headersRoute(req.Headers)
+	if len(routes) >= 1 && routes[0].URI == p.URI {
+		req.Headers.Set(routes[1:])
+	}
+
+	return p.determineTargets, nil
+}
+
+func (p *Proxy) determineTargets(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	if maddr, found := p.hasMAddr(req.URI); found {
+		uri, err := uri.Parse(maddr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid URI in maddr: %w", err)
+		}
+		req.URI = uri
+		return p.forwardRequest, nil
+	}
+
+	if todo(false) {
+		// TODO: What is "responsible for"?
+		// If the domain of the Request-URI indicates a domain this element is
+		// not responsible for, the Request-URI MUST be placed into the target
+		// set as the only target, and the element MUST proceed to the task of
+		// Request Forwarding (Section 16.6).
+		// targets = append(targets, req.URI)
+	} else {
+		targets, err := p.findTargets(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find targets: %w", err)
+		}
+		if len(targets) == 0 {
+			if err := w.Write(ctx, sip.ResponseStatusNotFound); err != nil {
+				return nil, err
+			}
+			return p.done, nil
+		}
+	}
+	return p.forwardRequest, nil
+}
+
+func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
+	// TODO: Transfer the state?
+	// targets = from last step
+	for _, addr := range []string{"sip:127.0.0.1:1234"} {
+		reqCopy := req.Clone().(*sip.Request)
+
+		// TODO: Check params. See RFC 3261 16.6 1.
+		parsedURI, err := uri.Parse(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid URI: %w", err)
+		}
+		reqCopy.URI = parsedURI
+
+		if reqCopy.Headers.Has("Max-Forwards") {
+			reqCopy.Headers.Set(reqCopy.Headers.MaxForwards() - 1)
+		} else {
+			reqCopy.Headers.Set(header.MaxForwards(70))
+		}
+
+		// Record-Route
+		rroute := headersRecordRoute(reqCopy.Headers)
+		rroute = append(header.RecordRoute{{
+			URI: &uri.SIP{
+				User:   uri.User("foo"),
+				Addr:   uri.Host("bar"),
+				Params: make(header.Values).Set("lr", ""),
+			},
+		}}, rroute...)
+		reqCopy.Headers.Set(rroute)
+
+		// Add additional header information.
+
+		// Local policy. Add extra proxies that the request MUST pass?
+		if todo(false) {
+
+		}
+
+		// Determine Next-Hop Address, Port, and Transport
+
+		// Add a Via header field value
+		// TODO: Is this a bug? The transport needs a zero value prepended.
+		reqCopy.Headers.Prepend(header.Via{
+			header.ViaHop{
+				Proto: header.ProtoInfo{Name: "SIP", Version: "2.0"},
+			},
+		})
+
+		// Add a Content-Length header field if necessary
+
+		// Forward Request
+
+		// Set timer C
+		rq, err := p.Transport.GetOrDial(ctx, netip.MustParseAddrPort("127.0.0.1:1234"))
+		if err != nil {
+			return nil, err
+		}
+		err = rq.WriteRequest(ctx, reqCopy)
+		if err != nil {
+			return nil, err
+		}
+		break
+	}
+	return p.done, nil
+}
+
+func (p *Proxy) done(_ context.Context, _ *sip.Request, _ sip.ResponseWriter) (state, error) {
+	return nil, nil
+}

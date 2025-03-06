@@ -1,15 +1,19 @@
 package stateless
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"iter"
+	"log/slog"
+	"net"
+	"net/netip"
+	"slices"
+
 	"github.com/ghettovoice/gosip/sip"
 	"github.com/ghettovoice/gosip/sip/header"
 	"github.com/ghettovoice/gosip/sip/uri"
-	"iter"
-	"net/netip"
-	"slices"
 )
 
 type Proxy struct {
@@ -24,17 +28,44 @@ func (p *Proxy) BindTo(t sip.Transport) {
 	t.OnInboundResponse(p.handleInboundResponse)
 }
 
-func first(it iter.Seq2[int, *header.ViaHop]) (*header.ViaHop, bool) {
-	for _, v := range it {
-		return v, true
+// TODO: Why seq2 in message?
+func headersVia(hdrs sip.Headers) iter.Seq[header.ViaHop] {
+	return func(yield func(header.ViaHop) bool) {
+		for _, hdr := range hdrs.Get("Via") {
+			if via, ok := hdr.(header.Via); ok {
+				for j := range via {
+					if !yield(via[j]) {
+						return
+					}
+				}
+			}
+		}
 	}
-	return nil, false
 }
 
 func (p *Proxy) handleInboundResponse(ctx context.Context, response *sip.Response) error {
-	if hop, ok := first(response.Headers.ViaHops()); ok {
-
+	if vias := slices.Collect(headersVia(response.Headers)); len(vias) > 1 {
+		if front, rest, ok := PopFront(vias); ok {
+			if todo(front.Addr.String() != "") { // Check if this is this proxy.
+				response.Headers.Set(header.Via(rest))
+				// Need a way to send the resp with transport.
+				slog.Info("Dialing", "addr", rest[0].Addr.String())
+				dial, err := net.Dial("udp", rest[0].Addr.String())
+				if err != nil {
+					return err
+				}
+				defer dial.Close()
+				buf := bufio.NewWriter(dial)
+				defer buf.Flush()
+				err = response.RenderTo(buf)
+				if err != nil {
+					slog.Error("Dialing", "error", err)
+					return err
+				}
+			}
+		}
 	}
+	return nil
 }
 
 func todo(b bool) bool {

@@ -135,6 +135,23 @@ func (p *Proxy) validateSyntax(ctx context.Context, req *sip.Request, w sip.Resp
 	return p.validateScheme, nil
 }
 
+func uriScheme(u sip.URI) string {
+	switch v := u.(type) {
+	case *uri.SIP:
+		if v.Secured {
+			return "sips"
+		} else {
+			return "sip"
+		}
+	case *uri.Tel:
+		return "tel"
+	case *uri.Any:
+		return v.Scheme
+	default:
+		return ""
+	}
+}
+
 func (p *Proxy) validateScheme(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
 	var supported []string
 	if p.SupportedSchemes == nil {
@@ -142,7 +159,7 @@ func (p *Proxy) validateScheme(ctx context.Context, req *sip.Request, w sip.Resp
 	} else {
 		supported = p.SupportedSchemes
 	}
-	if !slices.Contains(supported, req.URI.(*uri.Any).Scheme) {
+	if !slices.Contains(supported, uriScheme(req.URI)) {
 		if err := w.Write(ctx, sip.ResponseStatusUnsupportedURIScheme); err != nil {
 			return nil, err
 		}

@@ -365,8 +365,8 @@ func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.Resp
 		rroute := req.Headers.RecordRoute()
 		rroute = append(header.RecordRoute{{
 			URI: &uri.SIP{
-				User:   uri.User("foo"),
-				Addr:   uri.Host("bar"),
+				// User:   uri.User("foo"),
+				Addr:   uri.HostPort("127.0.0.1", 9999),
 				Params: make(header.Values).Set("lr", ""),
 			},
 		}}, rroute...)

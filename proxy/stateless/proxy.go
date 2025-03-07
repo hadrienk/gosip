@@ -184,14 +184,34 @@ func (p *Proxy) validateMaxForwards(ctx context.Context, req *sip.Request, w sip
 	return p.validateLoop, nil
 }
 
-func (p *Proxy) validateLoop(ctx context.Context, _ *sip.Request, w sip.ResponseWriter) (state, error) {
+func (p *Proxy) validateLoop(ctx context.Context, req *sip.Request, w sip.ResponseWriter) (state, error) {
 	if p.DetectLoops {
-		// TODO: Implement loop detection
-		if todo(false) {
-			if err := w.Write(ctx, sip.ResponseStatusLoopDetected); err != nil {
-				return nil, err
+		var loops []*header.ViaHop
+		for _, hop := range req.Headers.ViaHops() {
+			for _, tr := range p.transports {
+				// TODO: figure out how to match on multiple transports.
+				if hop.Addr.Equal(tr) {
+					loops = append(loops, hop)
+				}
 			}
-			return p.done, nil
+		}
+		for _, loop := range loops {
+			for _, bp := range loop.Params.Get("branch") {
+				brch, brloop, err := branch(crypto.SHA3_256, req)
+				if err != nil {
+					return nil, err
+				}
+				params := strings.Split(bp, "-")
+				if len(params) != 2 {
+					continue
+				}
+				if params[0] == brch && params[1] == brloop {
+					if err := w.Write(ctx, sip.ResponseStatusLoopDetected); err != nil {
+						return nil, err
+					}
+					return p.done, nil
+				}
+			}
 		}
 	}
 	return p.validateProxyRequire, nil

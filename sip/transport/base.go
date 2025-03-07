@@ -139,6 +139,8 @@ type parseErrKey struct{}
 
 type responderKey struct{}
 
+type connKey struct{}
+
 func (*connReader) servePacket(ac any, p sip.Parser, onMsgFn func(context.Context, sip.Message) error, logger *slog.Logger) error {
 	pc, isPktConn := ac.(net.PacketConn)
 	c, isConn := ac.(net.Conn)
@@ -184,9 +186,10 @@ func (*connReader) servePacket(ac any, p sip.Parser, onMsgFn func(context.Contex
 			msgCtx = context.WithValue(msgCtx, parseErrKey{}, err)
 		}
 
-		msgLogger.Info("message received", "message", msg, "dump", log.CalcValue(func() any { return msg.Render() }))
+		msgLogger.Debug("message received", "message", msg, "dump", log.CalcValue(func() any { return msg.Render() }))
 
 		msgCtx = context.WithValue(msgCtx, loggerKey{}, msgLogger)
+		msgCtx = context.WithValue(msgCtx, connKey{}, pc)
 		if err = onMsgFn(msgCtx, msg); err != nil {
 			msgLogger.Warn("failed to accept inbound message", "error", err)
 		}
@@ -433,14 +436,16 @@ func (mh *messageHandler) onInMsg(ctx context.Context, tp baseTransp, c baseConn
 
 		logger = logger.With("response", m)
 
+		if perr, ok := ctx.Value(parseErrKey{}).(error); ok {
+			logger.Info("discarding inbound response due to parsing error", "error", perr)
+			return false
+		}
+
 		if !m.IsValid() {
 			logger.Info("discarding invalid inbound response")
 			return false
 		}
-		if _, ok := ctx.Value(parseErrKey{}).(error); ok {
-			logger.Info("discarding inbound response due to parsing error")
-			return false
-		}
+
 		// RFC 3261 Section 18.1.2.
 		if stringutils.LCase(viaHop.Addr.Host()) != stringutils.LCase(tp.options().sentByHost()) {
 			logger.Info(fmt.Sprintf(`discarding inbound response due to Via's "sent-by" mismatch with transport's host = %q`, tp.options().sentByHost()))

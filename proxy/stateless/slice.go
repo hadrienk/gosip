@@ -2,6 +2,14 @@ package stateless
 
 // TODO: maybe add this to the headers? headers.PopFirst(name)
 
+func First[T any](c []T) (T, bool) {
+	if len(c) == 0 {
+		var zero T
+		return zero, false
+	}
+	return c[0], true
+}
+
 func PopFront[T any](c []T) (T, []T, bool) {
 	if len(c) == 0 {
 		var zero T

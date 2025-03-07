@@ -1,23 +1,22 @@
 package stateless
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"iter"
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"slices"
+	"strings"
 
-	"github.com/ghettovoice/gosip/internal/iterutils"
 	"github.com/ghettovoice/gosip/sip"
 	"github.com/ghettovoice/gosip/sip/header"
+	"github.com/ghettovoice/gosip/sip/transport"
 	"github.com/ghettovoice/gosip/sip/uri"
 )
 
@@ -31,10 +30,15 @@ type Proxy struct {
 	SupportedSchemes []string
 	URI              uri.URI
 	Transport        sip.Transport
+	transports       []sip.Transport
+
+	hash crypto.Hash
 }
 
 func (p *Proxy) BindTo(ts ...sip.Transport) {
+	p.hash = crypto.SHA256
 	for _, t := range ts {
+		p.transports = append(p.transports, t)
 		t.OnInboundRequest(p.handleInboundRequest)
 		t.OnInboundResponse(p.handleInboundResponse)
 	}
@@ -56,27 +60,55 @@ func headersVia(hdrs sip.Headers) iter.Seq[header.ViaHop] {
 }
 
 func (p *Proxy) handleInboundResponse(ctx context.Context, response *sip.Response) error {
+	conn, ok := transport.Connection(ctx)
+	if !ok {
+		return errors.New("no packet conn")
+	}
+
 	if vias := slices.Collect(headersVia(response.Headers)); len(vias) > 1 {
 		if front, rest, ok := PopFront(vias); ok {
 			if todo(front.Addr.String() != "") { // Check if this is this proxy.
 				response.Headers.Set(header.Via(rest))
+
+				// from, err := net.ResolveUDPAddr("udp", front.Addr.String())
+				// if err != nil {
+				//	return nil
+				// }
+
+				to, err := net.ResolveUDPAddr("udp", rest[0].Addr.String())
+				if err != nil {
+					return nil
+				}
+
 				// TODO: Need a way to send the resp with the transport. Transaction layer leaks for now.
-				slog.Info("Dialing", "addr", rest[0].Addr.String())
-				dial, err := net.Dial("udp", rest[0].Addr.String())
+				// t.Dial(from, to, response)
+				// slog.Info("Dialing", "resp", response, "from", from, "to", to)
+				// dial, err := net.DialUDP("udp", from, to)
+				// if err != nil {
+				//	return err
+				// }
+				// defer dial.Close()
+				// 				buf := bufio.NewWriter(dial)
+				//				err = response.RenderTo(buf)
+				// return buf.Flush()
+
+				var buf bytes.Buffer
+				err = response.RenderTo(&buf)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to render response: %v", err)
 				}
-				defer dial.Close()
-				buf := bufio.NewWriter(dial)
-				err = response.RenderTo(buf)
+				slog.Info(fmt.Sprintf("Forwarding response %d, %s", response.Status, response.Reason))
+				_, err = conn.WriteTo(buf.Bytes(), to)
 				if err != nil {
-					slog.Error("Dialing", "error", err)
-					return err
+					return fmt.Errorf("failed to write response: %v", err)
 				}
-				return buf.Flush()
+
 			}
 		}
+	} else {
+		slog.Info(fmt.Sprintf("Discarded response %d, %s", response.Status, response.Reason))
 	}
+
 	return nil
 }
 
@@ -88,15 +120,11 @@ func removeMaddr(_ sip.URI) sip.URI {
 	panic("not implemented yet")
 }
 
-func (p *Proxy) isURIMarked(sip.URI) bool {
-	return todo(false)
-}
-
 func (p *Proxy) hasMAddr(u sip.URI) (string, bool) {
 	return "", todo(false)
 }
 
-func (p *Proxy) isResponsibleFor(string) bool {
+func (p *Proxy) isResponsibleFor(req *sip.Request) bool {
 	return todo(false)
 }
 
@@ -140,6 +168,7 @@ func (p *Proxy) validateSyntax(ctx context.Context, req *sip.Request, w sip.Resp
 	return p.validateScheme, nil
 }
 
+// TODO add this to the uri interface?
 func uriScheme(u sip.URI) string {
 	switch v := u.(type) {
 	case *uri.SIP:
@@ -154,6 +183,34 @@ func uriScheme(u sip.URI) string {
 		return v.Scheme
 	default:
 		return ""
+	}
+}
+
+func uriAddr(u uri.URI) string {
+	switch v := u.(type) {
+	case *uri.SIP:
+		return v.Addr.String()
+	case *uri.Tel:
+		return v.String()
+	case *uri.Any:
+		return v.String()
+	default:
+		return ""
+	}
+}
+
+// TODO: add this to the uri interface?
+func uriParam(u sip.URI) uri.Values {
+	switch v := u.(type) {
+	case *uri.SIP:
+		return v.Params
+	case *uri.Tel:
+		return v.Params
+	case *uri.Any:
+		p, _ := url.ParseQuery(v.RawQuery)
+		return uri.Values(p)
+	default:
+		return nil
 	}
 }
 
@@ -243,22 +300,44 @@ func (p *Proxy) validateProxyAuth(_ context.Context, _ *sip.Request, _ sip.Respo
 	return p.routePreprocess, nil
 }
 
+func (p *Proxy) marker(req *sip.Request) (string, error) {
+	return hash(p.hash, req.Headers.CallID())
+}
+
+func (p *Proxy) isURIMarked(req *sip.Request, uri sip.URI) (bool, error) {
+	marker, err := p.marker(req)
+	if err != nil {
+		return false, err
+	}
+	return uriParam(uri).Has(marker), nil
+}
+
 func (p *Proxy) routePreprocess(ctx context.Context, req *sip.Request, _ sip.ResponseWriter) (state, error) {
-	if p.isURIMarked(req.URI) {
-		route := req.Headers.Route()
-		n := len(route)
-		var last header.EntityAddr
-		if n < 1 {
+	marked, err := p.isURIMarked(req, req.URI)
+	if err != nil {
+		return nil, err
+	} else if marked {
+		last, route, ok := PopBack(req.Headers.Route())
+		if !ok {
 			return nil, sip.ErrInvalidMessage
 		}
-		route, last = route[:n-1], route[n-1]
-		req.Headers.Set(route)
+
+		req.Headers.Set(header.Route(route))
+		uriParam(last.URI).Clear()
 		req.URI = last.URI
 		return p.done, nil
 	}
+
 	if maddr, found := p.hasMAddr(req.URI); found {
-		if p.isResponsibleFor(maddr) && p.samePortAndTransport(req, maddr) {
+		if p.isResponsibleFor(req) && p.samePortAndTransport(req, maddr) {
 			req.URI = removeMaddr(req.URI)
+		}
+	}
+
+	if fr, ok := First(req.Headers.Route()); ok {
+		if uriAddr(fr.URI) == "127.0.0.1:9999" {
+			_, route, _ := PopFront(req.Headers.Route())
+			req.Headers.Set(header.Route(route))
 		}
 	}
 	routes := req.Headers.Route()
@@ -279,13 +358,9 @@ func (p *Proxy) determineTargets(ctx context.Context, req *sip.Request, w sip.Re
 		return p.forwardRequest, nil
 	}
 
-	if todo(false) {
-		// TODO: What is "responsible for"?
-		// If the domain of the Request-URI indicates a domain this element is
-		// not responsible for, the Request-URI MUST be placed into the target
-		// set as the only target, and the element MUST proceed to the task of
-		// Request Forwarding (Section 16.6).
-		// targets = append(targets, req.URI)
+	// TODO: pass targets to the next step.
+	if uriAddr(req.URI) != "127.0.0.1:9999" {
+		targets := uriAddr(req.URI)
 	} else {
 		targets, err := p.findTargets(ctx, req)
 		if err != nil {
@@ -299,47 +374,6 @@ func (p *Proxy) determineTargets(ctx context.Context, req *sip.Request, w sip.Re
 		}
 	}
 	return p.forwardRequest, nil
-}
-
-type renderable interface {
-	RenderTo(w io.Writer) error
-}
-
-func hash(hasher crypto.Hash, data ...renderable) (string, error) {
-	h := hasher.New()
-	for _, datum := range data {
-		if err := datum.RenderTo(h); err != nil {
-			return "", err
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-func branch(hasher crypto.Hash, req *sip.Request) (branch string, loop string, err error) {
-
-	_, viaHop := iterutils.IterFirst2(req.Headers.ViaHops())
-
-	loop, err = hash(hasher,
-		req.Headers.To(),
-		req.Headers.From(),
-		req.Headers.CallID(),
-		req.URI, // TODO: BEFORE TRANSLATION
-		header.Via{*viaHop},
-		req.Headers.CSeq(),
-		// TODO: make(sip.Headers).Append(req.Headers.Get("Proxy-Require"))
-		// TODO: req.Headers.Get("Proxy-Require"),
-	)
-	if err != nil {
-		return "", "", err
-	}
-	// Generate 8 random bytes (64 bits)
-	b := make([]byte, 8)
-	_, err = rand.Read(b)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Prefix with magic cookie as required by RFC3261
-	return sip.MagicCookie + hex.EncodeToString(b), loop, nil
 }
 
 func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.ResponseWriter) (state, error) {
@@ -362,12 +396,18 @@ func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.Resp
 		}
 
 		// Record-Route
+		marker, err := p.marker(reqCopy)
+		if err != nil {
+			return nil, err
+		}
 		rroute := req.Headers.RecordRoute()
 		rroute = append(header.RecordRoute{{
 			URI: &uri.SIP{
 				// User:   uri.User("foo"),
-				Addr:   uri.HostPort("127.0.0.1", 9999),
-				Params: make(header.Values).Set("lr", ""),
+				Addr: uri.HostPort("127.0.0.1", 9999),
+				Params: make(header.Values).
+					Set("lr", "").
+					Set(marker, ""),
 			},
 		}}, rroute...)
 		reqCopy.Headers.Set(rroute)
@@ -403,6 +443,7 @@ func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.Resp
 		// Forward Request
 
 		// Set timer C
+		slog.Info(fmt.Sprintf("Forwarding request %s, %s", req.Method, req.URI), "original", req, "copy", reqCopy)
 		rq, err := p.Transport.GetOrDial(ctx, netip.MustParseAddrPort("127.0.0.1:1234"))
 		if err != nil {
 			return nil, err

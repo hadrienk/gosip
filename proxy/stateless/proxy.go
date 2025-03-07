@@ -3,14 +3,19 @@ package stateless
 import (
 	"bufio"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log/slog"
 	"net"
 	"net/netip"
 	"slices"
 
+	"github.com/ghettovoice/gosip/internal/iterutils"
 	"github.com/ghettovoice/gosip/sip"
 	"github.com/ghettovoice/gosip/sip/header"
 	"github.com/ghettovoice/gosip/sip/uri"
@@ -276,6 +281,47 @@ func (p *Proxy) determineTargets(ctx context.Context, req *sip.Request, w sip.Re
 	return p.forwardRequest, nil
 }
 
+type renderable interface {
+	RenderTo(w io.Writer) error
+}
+
+func hash(hasher crypto.Hash, data ...renderable) (string, error) {
+	h := hasher.New()
+	for _, datum := range data {
+		if err := datum.RenderTo(h); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+func branch(hasher crypto.Hash, req *sip.Request) (branch string, loop string, err error) {
+
+	_, viaHop := iterutils.IterFirst2(req.Headers.ViaHops())
+
+	loop, err = hash(hasher,
+		req.Headers.To(),
+		req.Headers.From(),
+		req.Headers.CallID(),
+		req.URI, // TODO: BEFORE TRANSLATION
+		header.Via{*viaHop},
+		req.Headers.CSeq(),
+		// TODO: make(sip.Headers).Append(req.Headers.Get("Proxy-Require"))
+		// TODO: req.Headers.Get("Proxy-Require"),
+	)
+	if err != nil {
+		return "", "", err
+	}
+	// Generate 8 random bytes (64 bits)
+	b := make([]byte, 8)
+	_, err = rand.Read(b)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Prefix with magic cookie as required by RFC3261
+	return sip.MagicCookie + hex.EncodeToString(b), loop, nil
+}
+
 func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.ResponseWriter) (state, error) {
 	// TODO: Transfer the state?
 	// targets = from last step
@@ -316,7 +362,11 @@ func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.Resp
 		// Determine Next-Hop Address, Port, and Transport
 
 		// Add a Via header field value
-		var brch, loop string
+		brch, loop, err := branch(crypto.SHA3_256, req)
+		if err != nil {
+			return nil, err
+		}
+
 		// TODO: This needs to be documented, or maybe enforced (diff api per layer?)
 		// In order for the trasnport to accept the request, the Via header MUST have a
 		// zero Addr field.

@@ -316,10 +316,15 @@ func (p *Proxy) forwardRequest(ctx context.Context, req *sip.Request, _ sip.Resp
 		// Determine Next-Hop Address, Port, and Transport
 
 		// Add a Via header field value
-		// TODO: Is this a bug? The transport needs a zero value prepended.
+		var brch, loop string
+		// TODO: This needs to be documented, or maybe enforced (diff api per layer?)
+		// In order for the trasnport to accept the request, the Via header MUST have a
+		// zero Addr field.
 		reqCopy.Headers.Prepend(header.Via{
 			header.ViaHop{
-				Proto: header.ProtoInfo{Name: "SIP", Version: "2.0"},
+				Transport: "UDP",
+				Proto:     header.ProtoInfo{Name: "SIP", Version: "2.0"},
+				Params:    make(header.Values).Set("branch", fmt.Sprintf("%s-%s", brch, loop)),
 			},
 		})
 

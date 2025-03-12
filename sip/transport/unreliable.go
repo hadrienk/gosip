@@ -109,6 +109,15 @@ func (tp *unreliableBase) newConn(c net.PacketConn, raddr netip.AddrPort) *unrel
 	return uc
 }
 
+func Connection(ctx context.Context) (net.PacketConn, bool) {
+	val := ctx.Value(connKey{})
+	if val == nil {
+		return nil, false
+	}
+	conn, ok := val.(net.PacketConn)
+	return conn, ok
+}
+
 func (tp *unreliableBase) GetOrDial(ctx context.Context, addr netip.AddrPort, opts ...any) (sip.RequestWriter, error) {
 	c, err := tp.getOrDial(ctx, addr, opts...)
 	if err != nil {
